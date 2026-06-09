@@ -1,0 +1,472 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  CUSTOMER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum AuthProvider {
+  EMAIL
+  GOOGLE
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum PaymentGateway {
+  RAZORPAY
+  PHONEPE
+}
+
+enum RefundStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+enum AddressType {
+  BILLING
+  SHIPPING
+}
+
+enum CouponType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+model User {
+  id               String        @id @default(uuid())
+  email            String        @unique
+  name             String?
+  passwordHash     String?
+  role             Role          @default(CUSTOMER)
+  isEmailVerified  Boolean       @default(false)
+  provider         AuthProvider  @default(EMAIL)
+  providerId       String?       // Google profile ID if OAuth
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  deletedAt        DateTime?     // For soft-deletion
+  loginAttempts    Int           @default(0)
+  lockoutUntil     DateTime?
+
+  // Relations
+  profile          UserProfile?
+  addresses        Address[]
+  orders           Order[]
+  cart             Cart?
+  designs          ThreeDDesign[]
+  couponUsages     CouponUsage[]
+  auditLogs        AuditLog[]
+  wishlist         WishlistItem[]
+  invoices         Invoice[]
+  referrerCoupons  Coupon[]      @relation("ReferrerCoupons")
+
+
+  @@index([email])
+}
+
+model UserProfile {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phone     String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Address {
+  id          String      @id @default(uuid())
+  userId      String
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        AddressType
+  street      String
+  city        String
+  state       String
+  country     String
+  postalCode  String
+  isDefault   Boolean     @default(false)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([userId])
+}
+
+model Category {
+  id          String     @id @default(uuid())
+  name        String     @unique
+  slug        String     @unique
+  description String?
+  parentId    String?
+  parent      Category?  @relation("SubCategories", fields: [parentId], references: [id], onDelete: Cascade)
+  children    Category[] @relation("SubCategories")
+  products    Product[]
+  coupons     Coupon[]
+  createdAt   DateTime   @default(now())
+
+  updatedAt   DateTime   @updatedAt
+
+  @@index([slug])
+}
+
+model Product {
+  id          String        @id @default(uuid())
+  name        String
+  slug        String        @unique
+  description String
+  basePrice   Decimal       @db.Decimal(10, 2)
+  status      ProductStatus @default(DRAFT)
+  categoryId  String
+  category    Category      @relation(fields: [categoryId], references: [id])
+  images      String[]      // Array of Cloudinary URLs
+  metaTitle   String?
+  metaDesc    String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  // Relations
+  variants    ProductVariant[]
+  designs     ThreeDDesign[]
+  wishlist    WishlistItem[]
+
+  @@index([slug])
+  @@index([categoryId])
+}
+
+model ProductVariant {
+  id           String        @id @default(uuid())
+  productId    String
+  product      Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name         String        // e.g., "Red / XL"
+  sku          String        @unique
+  priceOffset  Decimal       @default(0.00) @db.Decimal(10, 2) // Price diff relative to Product.basePrice
+  stock        Int           @default(0)
+  attributes   Json          // Structured attributes: { "color": "red", "size": "XL" }
+  isActive     Boolean       @default(true)
+  model3dUrl   String?       // Cloudinary/GCS URL for 3D model asset (.gltf / .glb)
+  config3d     Json?         // Custom configurations for default materials, textures, bounds
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  // Relations
+  cartItems    CartItem[]
+  orderItems   OrderItem[]
+  designs      ThreeDDesign[]
+
+  @@index([productId])
+  @@index([sku])
+}
+
+model Cart {
+  id        String     @id @default(uuid())
+  userId    String     @unique
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model CartItem {
+  id               String         @id @default(uuid())
+  cartId           String
+  cart             Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  productVariantId String
+  variant          ProductVariant @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
+  quantity         Int            @default(1)
+  customDesignId   String?        // Links if user added a customized 3D design to cart
+  customDesign     ThreeDDesign?  @relation(fields: [customDesignId], references: [id], onDelete: SetNull)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([cartId, productVariantId, customDesignId])
+  @@index([cartId])
+}
+
+model Order {
+  id                 String      @id @default(uuid())
+  orderNumber        String      @unique // E.g., AS-20260609-XYZ1
+  customerId         String
+  customer           User        @relation(fields: [customerId], references: [id])
+  status             OrderStatus @default(PENDING)
+  
+  // Pricing
+  totalAmount        Decimal     @db.Decimal(10, 2) // sum of (price * qty) before coupon
+  discountAmount     Decimal     @default(0.00) @db.Decimal(10, 2)
+  payableAmount      Decimal     @db.Decimal(10, 2) // totalAmount - discountAmount + shipping + tax
+  taxAmount          Decimal     @default(0.00) @db.Decimal(10, 2)
+  shippingCost       Decimal     @default(0.00) @db.Decimal(10, 2)
+  
+  // Checkout Details
+  shippingAddress    Json        // Complete snapshot of shipping address to prevent future edits breaking history
+  billingAddress     Json        // Complete snapshot of billing address
+  gstin              String?
+  
+  // Coupon applied
+  couponId           String?
+  coupon             Coupon?     @relation(fields: [couponId], references: [id], onDelete: SetNull)
+
+  // Tracking details
+  trackingNumber     String?
+  carrier            String?
+  estimatedDelivery  DateTime?
+  shippedAt          DateTime?
+  deliveredAt        DateTime?
+
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  // Relations
+  items              OrderItem[]
+  payments           Payment[]
+  refunds            Refund[]
+  usages             CouponUsage[]
+  invoice            Invoice?
+  trackingUpdates    TrackingUpdate[]
+
+  @@index([customerId])
+  @@index([orderNumber])
+  @@index([status])
+}
+
+model OrderItem {
+  id               String         @id @default(uuid())
+  orderId          String
+  order            Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productVariantId String
+  variant          ProductVariant @relation(fields: [productVariantId], references: [id])
+  quantity         Int
+  priceAtPurchase  Decimal        @db.Decimal(10, 2)
+  discountApplied  Decimal        @default(0.00) @db.Decimal(10, 2)
+  customDesignId   String?        // Snapshot of user 3D design if customized
+  customDesign     ThreeDDesign?  @relation(fields: [customDesignId], references: [id], onDelete: SetNull)
+  createdAt        DateTime       @default(now())
+
+  @@index([orderId])
+  @@index([productVariantId])
+}
+
+model Payment {
+  id               String         @id @default(uuid())
+  orderId          String
+  order            Order          @relation(fields: [orderId], references: [id])
+  gateway          PaymentGateway
+  transactionId    String         @unique // Razorpay transaction ID or PhonePe merchant transaction ID
+  gatewayOrderId   String?        // Gateway order/reference ID
+  gatewayPaymentId String?        // Specific payment transaction ID from gateway API response
+  gatewaySignature String?        // Secure signature validation payload
+  amount           Decimal        @db.Decimal(10, 2)
+  status           PaymentStatus  @default(PENDING)
+  rawResponse      Json?          // Dynamic logging of API responses
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  // Relations
+  refunds          Refund[]
+
+  @@index([orderId])
+  @@index([transactionId])
+}
+
+model Refund {
+  id              String       @id @default(uuid())
+  orderId         String
+  order           Order        @relation(fields: [orderId], references: [id])
+  paymentId       String
+  payment         Payment      @relation(fields: [paymentId], references: [id])
+  amount          Decimal      @db.Decimal(10, 2)
+  reason          String
+  status          RefundStatus @default(PENDING)
+  gatewayRefundId String?      @unique
+  rawResponse     Json?
+  initiatedBy     String?      // Reference to the Admin/Super Admin user ID
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([orderId])
+  @@index([paymentId])
+}
+
+model Coupon {
+  id            String        @id @default(uuid())
+  code          String        @unique
+  type          CouponType
+  value         Decimal       @db.Decimal(10, 2) // Discount percent or fixed value
+  minOrderValue Decimal       @default(0.00) @db.Decimal(10, 2)
+  maxDiscount   Decimal?      @db.Decimal(10, 2) // Only applicable for percentage discount type
+  startsAt      DateTime
+  expiresAt     DateTime
+  usageLimit    Int?          // Total times this coupon can be used across platform
+  usageCount    Int           @default(0)
+  userUsageLimit Int           @default(1) // Max times a single user can use this coupon
+  isActive      Boolean       @default(true)
+  
+  // Category restriction
+  categoryId    String?
+  category      Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  
+  // Referral settings
+  referrerId    String?
+  referrer      User?         @relation("ReferrerCoupons", fields: [referrerId], references: [id], onDelete: SetNull)
+  isFirstOrderOnly Boolean     @default(false)
+  
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // Relations
+  orders        Order[]
+  usages        CouponUsage[]
+
+  @@index([code])
+  @@index([categoryId])
+  @@index([referrerId])
+}
+
+model CouponUsage {
+  id        String   @id @default(uuid())
+  couponId  String
+  coupon    Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  usedAt    DateTime @default(now())
+
+  @@unique([userId, couponId, orderId])
+  @@index([couponId])
+  @@index([userId])
+}
+
+model ThreeDDesign {
+  id               String          @id @default(uuid())
+  userId           String
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId        String
+  product          Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productVariantId String
+  variant          ProductVariant  @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
+  name             String          @default("My Design")
+  designData       Json            // Configuration parameters: color layers, assets, textures, custom texts
+  thumbnailUrl     String?         // Cloudinary URL for design preview
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  // Relations
+  cartItems        CartItem[]
+  orderItems       OrderItem[]
+
+  @@index([userId])
+  @@index([productId])
+  @@index([productVariantId])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?  // Reference to user ID who triggered action. Can be null if system job
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String   // E.g. "USER_LOGIN", "PRODUCT_CREATE", "COUPON_APPLY", "REFUND_EXECUTE"
+  entityType String   // E.g. "Order", "Product", "User", "Payment"
+  entityId   String?  // ID of modified entity
+  oldValues  Json?    // Snapshot before state transition
+  newValues  Json?    // Snapshot after state transition
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@index([entityType])
+}
+
+model VerificationToken {
+  id        String   @id @default(uuid())
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}
+
+model WishlistItem {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId])
+  @@index([userId])
+}
+
+model Invoice {
+  id             String   @id @default(uuid())
+  invoiceNumber  String   @unique
+  orderId        String   @unique
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       User     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  pdfUrl         String?  // Optional storage link
+  gstin          String?  // Customer GSTIN if business order
+  cgst           Decimal  @db.Decimal(10, 2)
+  sgst           Decimal  @db.Decimal(10, 2)
+  igst           Decimal  @db.Decimal(10, 2)
+  taxRate        Decimal  @default(18.00) @db.Decimal(5, 2)
+  amount         Decimal  @db.Decimal(10, 2)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([customerId])
+  @@index([invoiceNumber])
+}
+
+model TrackingUpdate {
+  id          String   @id @default(uuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status      String   // E.g. "SHIPPED", "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED"
+  location    String
+  details     String
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+}

@@ -1,0 +1,41 @@
+name: AlphaStryk CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: Install Monorepo Dependencies
+      run: npm install
+
+    - name: Generate Prisma Database Client
+      run: npm run db:generate
+
+    - name: Compile Backend TypeScript
+      run: npm run build:api
+
+    - name: Compile Frontend Next.js
+      run: npm run build:web
+
+    - name: Run Backend Tests
+      run: |
+        npx ts-node apps/api/src/tests/design.test.ts
+        npx ts-node apps/api/src/tests/coupon.test.ts
+        npx ts-node apps/api/src/tests/seo.test.ts
+        npx ts-node apps/api/src/tests/admin.test.ts
+        npx ts-node apps/api/src/tests/production.test.ts
