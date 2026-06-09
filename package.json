@@ -9,8 +9,9 @@
   "scripts": {
     "dev:web": "npm run dev --workspace=apps/web",
     "dev:api": "npm run dev --workspace=apps/api",
-    "build:web": "npm run build --workspace=apps/web",
-    "build:api": "npm run build --workspace=apps/api",
+    "build:web": "npm run build:packages && npm run build --workspace=apps/web",
+    "build:api": "npm run build:packages && npm run build --workspace=apps/api",
+    "build:packages": "npm run build --workspace=packages/common && npm run build --workspace=packages/db",
     "db:generate": "npm run generate --workspace=packages/db",
     "db:migrate": "npm run migrate --workspace=packages/db",
     "db:studio": "npm run studio --workspace=packages/db",
