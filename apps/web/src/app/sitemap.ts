@@ -15,7 +15,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       productsList = data.success ? data.data : [];
     }
   } catch (err) {
-    console.error('Failed to pre-fetch sitemap routes:', err);
+    console.warn('Backend offline during build. Generating sitemap with static fallback routes.');
   }
 
   const productUrls = productsList.map((p: any) => ({
